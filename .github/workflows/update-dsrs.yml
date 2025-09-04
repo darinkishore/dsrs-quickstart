@@ -83,8 +83,9 @@ jobs:
           5. Update vendor/.git_sha with: ${{ needs.check-for-updates.outputs.latest_sha }}
           6. Ensure the Rust edition is set to 2021 in all Cargo.toml files
           7. Fix any let-chain syntax to be compatible with Rust 2021
-          8. Test that the project builds successfully
-          9. Create a pull request with the changes
+          8. Test that the project builds successfully with 'cargo build'
+          9. Run tests with 'cargo test' to ensure everything works
+          10. Create a pull request with the changes
 
           Current SHA: ${{ needs.check-for-updates.outputs.current_sha }}
           Latest SHA: ${{ needs.check-for-updates.outputs.latest_sha }}
@@ -145,8 +146,9 @@ jobs:
           chmod +x update-dsrs.sh
           ./update-dsrs.sh
           
-          # Test build
-          cargo check
+          # Test build and run tests
+          cargo build --release
+          cargo test
           
           # Create PR directly
           git config --global user.name "github-actions[bot]"

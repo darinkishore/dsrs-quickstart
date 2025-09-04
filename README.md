@@ -9,7 +9,16 @@ This quickstart project demonstrates a simple but powerful LLM integration using
 - A working Rust toolchain
 - An [OpenAI API key](https://platform.openai.com/api-keys)
 
-## Setup
+## Getting Started
+
+### Clone the Repository
+
+```bash
+git clone https://github.com/darinkishore/dsrs-quickstart.git
+cd dsrs-quickstart
+```
+
+### Setup
 
 1. **Set Your API Key**
    

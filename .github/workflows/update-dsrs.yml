@@ -1,0 +1,175 @@
+name: Update DSRs Dependency
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force update even if no new version'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  check-for-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      has_update: ${{ steps.check.outputs.has_update }}
+      latest_sha: ${{ steps.check.outputs.latest_sha }}
+      current_sha: ${{ steps.check.outputs.current_sha }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Check for DSRs updates
+        id: check
+        run: |
+          # Get the latest commit SHA from the DSRs repository
+          LATEST_SHA=$(curl -s https://api.github.com/repos/krypticmouse/DSRs/commits/main | jq -r '.sha' | head -c 7)
+          echo "Latest DSRs SHA: $LATEST_SHA"
+          
+          # Try to get current SHA from vendor directory
+          if [ -f vendor/.git_sha ]; then
+            CURRENT_SHA=$(cat vendor/.git_sha)
+          else
+            # If no SHA file, check the last commit message for SHA reference
+            CURRENT_SHA=$(git log --grep="Update vendored DSRs" -n 1 --pretty=format:"%s" | grep -oE '[a-f0-9]{7}' || echo "unknown")
+          fi
+          echo "Current DSRs SHA: $CURRENT_SHA"
+          
+          if [ "$LATEST_SHA" != "$CURRENT_SHA" ] || [ "${{ github.event.inputs.force_update }}" == "true" ]; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+            echo "Update available: $CURRENT_SHA -> $LATEST_SHA"
+          else
+            echo "has_update=false" >> $GITHUB_OUTPUT
+            echo "No update needed"
+          fi
+          
+          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+          echo "current_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
+
+  update-dependency:
+    needs: check-for-updates
+    if: needs.check-for-updates.outputs.has_update == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create update issue for Claude
+        id: create-issue
+        run: |
+          # Create an issue that will trigger Claude
+          ISSUE_BODY="@claude Please update the vendored DSRs dependency to the latest version.
+
+          ## Instructions:
+          1. Remove the current vendor directory
+          2. Clone the latest DSRs from https://github.com/krypticmouse/DSRs
+          3. Copy the DSRs repository contents to vendor/ 
+          4. Remove the vendor/.git directory to avoid submodule issues
+          5. Update vendor/.git_sha with: ${{ needs.check-for-updates.outputs.latest_sha }}
+          6. Ensure the Rust edition is set to 2021 in all Cargo.toml files
+          7. Fix any let-chain syntax to be compatible with Rust 2021
+          8. Test that the project builds successfully
+          9. Create a pull request with the changes
+
+          Current SHA: ${{ needs.check-for-updates.outputs.current_sha }}
+          Latest SHA: ${{ needs.check-for-updates.outputs.latest_sha }}
+
+          @codex This is an automated update request for the vendored DSRs dependency."
+          
+          ISSUE_URL=$(gh issue create \
+            --title "Update DSRs to ${{ needs.check-for-updates.outputs.latest_sha }}" \
+            --body "$ISSUE_BODY" \
+            --label "dependencies,automated" \
+            --repo ${{ github.repository }} \
+            --json url -q '.url')
+          
+          echo "issue_url=$ISSUE_URL" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Wait for Claude to process
+        run: |
+          echo "Created issue: ${{ steps.create-issue.outputs.issue_url }}"
+          echo "Waiting for Claude to process the update request..."
+          # Give Claude some time to respond
+          sleep 30
+      
+      - name: Alternative - Direct update script
+        if: failure()
+        run: |
+          # Fallback: Create a simple update script if Claude doesn't respond
+          cat > update-dsrs.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          echo "Updating vendored DSRs dependency..."
+          
+          # Remove old vendor
+          rm -rf vendor
+          
+          # Clone latest DSRs
+          git clone https://github.com/krypticmouse/DSRs.git vendor-tmp
+          
+          # Copy to vendor (excluding .git)
+          cp -r vendor-tmp/* vendor/
+          cp -r vendor-tmp/.[^.]* vendor/ 2>/dev/null || true
+          rm -rf vendor/.git
+          
+          # Save the SHA
+          echo "${{ needs.check-for-updates.outputs.latest_sha }}" > vendor/.git_sha
+          
+          # Fix Rust edition issues
+          find vendor -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} \;
+          
+          # Clean up
+          rm -rf vendor-tmp
+          
+          echo "Update complete!"
+          EOF
+          
+          chmod +x update-dsrs.sh
+          ./update-dsrs.sh
+          
+          # Test build
+          cargo check
+          
+          # Create PR directly
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          BRANCH_NAME="update-dsrs-${{ needs.check-for-updates.outputs.latest_sha }}"
+          git checkout -b $BRANCH_NAME
+          git add -A
+          git commit -m "Update vendored DSRs to ${{ needs.check-for-updates.outputs.latest_sha }}
+          
+          Automated dependency update from https://github.com/krypticmouse/DSRs"
+          
+          git push origin $BRANCH_NAME
+          
+          gh pr create \
+            --title "Update DSRs to ${{ needs.check-for-updates.outputs.latest_sha }}" \
+            --body "Automated update of vendored DSRs dependency.
+            
+            Previous version: ${{ needs.check-for-updates.outputs.current_sha }}
+            New version: ${{ needs.check-for-updates.outputs.latest_sha }}
+            
+            This PR was automatically generated by the update-dsrs workflow." \
+            --base main \
+            --head $BRANCH_NAME
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
